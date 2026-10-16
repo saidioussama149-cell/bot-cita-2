@@ -142,11 +142,26 @@ def pulsar_acceso(page):
 
     boton.wait_for(state="visible", timeout=45000)
     boton.scroll_into_view_if_needed()
-    boton.click(timeout=15000)
 
-    esperar_cambio(page, 2000)
-    logging.info("Acceso al procedimiento pulsado.")
+    # El clic sí funciona, pero la sede puede dejar una navegación
+    # pendiente y Playwright se queda esperando. Evitamos esa espera
+    # automática y comprobamos directamente que aparezca el siguiente paso.
+    boton.click(timeout=15000, no_wait_after=True)
 
+    logging.info(
+        "Clic en 'Acceder al Procedimiento' realizado. "
+        "Esperando selector de provincia..."
+    )
+
+    provincia = page.locator(
+        "select#form, select[name='form']"
+    ).first
+
+    provincia.wait_for(state="visible", timeout=60000)
+
+    logging.info(
+        "Acceso correcto: selector de provincia visible."
+    )
 
 def aceptar(page, descripcion="Aceptar"):
     selectores = [
@@ -161,7 +176,7 @@ def aceptar(page, descripcion="Aceptar"):
             boton = page.locator(selector).first
             boton.wait_for(state="visible", timeout=5000)
             boton.scroll_into_view_if_needed()
-            boton.click(timeout=15000)
+            boton.click(timeout=15000, no_wait_after=True)
             esperar_cambio(page, 1800)
 
             logging.info("%s pulsado con selector %s", descripcion, selector)
@@ -249,7 +264,7 @@ def pasar_avisos(page):
             boton = page.locator(selector).first
             boton.wait_for(state="visible", timeout=7000)
             boton.scroll_into_view_if_needed()
-            boton.click(timeout=15000)
+            boton.click(timeout=15000, no_wait_after=True)
             esperar_cambio(page, 2000)
 
             logging.info("Avisos superados con selector: %s", selector)
@@ -372,7 +387,7 @@ def pulsar_solicitar_cita(page):
             boton = page.locator(selector).first
             boton.wait_for(state="visible", timeout=10000)
             boton.scroll_into_view_if_needed()
-            boton.click(timeout=15000)
+            boton.click(timeout=15000, no_wait_after=True)
 
             # Damos tiempo a que aparezca el resultado.
             esperar_cambio(page, 3500)
