@@ -143,25 +143,59 @@ def pulsar_acceso(page):
     boton.wait_for(state="visible", timeout=45000)
     boton.scroll_into_view_if_needed()
 
-    # El clic sí funciona, pero la sede puede dejar una navegación
-    # pendiente y Playwright se queda esperando. Evitamos esa espera
-    # automática y comprobamos directamente que aparezca el siguiente paso.
+    # La sede deja a veces la navegación pendiente indefinidamente.
+    # El clic sí se ejecuta, por eso no esperamos a que Playwright dé
+    # la navegación por terminada.
     boton.click(timeout=15000, no_wait_after=True)
 
     logging.info(
-        "Clic en 'Acceder al Procedimiento' realizado. "
-        "Esperando selector de provincia..."
+        "Clic realizado. Dejando cargar la siguiente pantalla..."
     )
 
-    provincia = page.locator(
-        "select#form, select[name='form']"
-    ).first
+    # Dejamos que llegue el HTML principal y después detenemos recursos
+    # que puedan mantener la navegación abierta (analytics, imágenes, etc.).
+    page.wait_for_timeout(5000)
 
-    provincia.wait_for(state="visible", timeout=60000)
+    try:
+        page.evaluate("window.stop()")
+        logging.info("Carga pendiente detenida para continuar con el DOM.")
+    except Exception as error:
+        logging.info("No fue necesario detener la carga: %s", error)
 
-    logging.info(
-        "Acceso correcto: selector de provincia visible."
-    )
+    logging.info("URL después del acceso: %s", page.url)
+
+    # Buscar el selector de provincia sin depender del estado de navegación.
+    limite = time.time() + 45
+    encontrado = False
+
+    while time.time() < limite:
+        try:
+            existe = page.evaluate(
+                """() => Boolean(document.querySelector("select#form, select[name='form']"))"""
+            )
+            if existe:
+                encontrado = True
+                break
+        except Exception:
+            pass
+
+        page.wait_for_timeout(1000)
+
+    if not encontrado:
+        try:
+            texto = page.evaluate(
+                "() => document.body ? document.body.innerText.slice(0, 1000) : ''"
+            )
+        except Exception:
+            texto = ""
+
+        logging.warning("No apareció el selector de provincia.")
+        logging.warning("Texto visible tras el acceso: %s", texto)
+        raise RuntimeError(
+            "PASO 2 falló: no apareció el selector de provincia tras el acceso."
+        )
+
+    logging.info("Selector de provincia encontrado. Continuando a Toledo.")
 
 def aceptar(page, descripcion="Aceptar"):
     selectores = [
@@ -189,22 +223,42 @@ def aceptar(page, descripcion="Aceptar"):
 
 
 def seleccionar_provincia(page):
-    log_paso(3, "Seleccionando provincia")
+    log_paso(3, "Seleccionando provincia: Toledo")
 
     provincia = page.locator(
         "select#form, select[name='form']"
     ).first
 
-    provincia.wait_for(state="visible", timeout=45000)
-    provincia.select_option(label=PROVINCIA)
+    provincia.wait_for(state="attached", timeout=30000)
+
+    try:
+        provincia.select_option(label=PROVINCIA, timeout=15000)
+    except Exception:
+        # Fallback por si Playwright vuelve a quedar condicionado por una
+        # navegación pendiente: seleccionamos Toledo directamente en el DOM.
+        seleccionado = page.evaluate(
+            """(provincia) => {
+                const s = document.querySelector("select#form, select[name='form']");
+                if (!s) return false;
+                const opt = Array.from(s.options).find(
+                    o => o.text.trim().toLowerCase() === provincia.toLowerCase()
+                );
+                if (!opt) return false;
+                s.value = opt.value;
+                s.dispatchEvent(new Event('change', {bubbles: true}));
+                return true;
+            }""",
+            PROVINCIA,
+        )
+        if not seleccionado:
+            raise RuntimeError("No se encontró Toledo en el desplegable de provincia.")
 
     logging.info("Provincia seleccionada: %s", PROVINCIA)
 
     if not aceptar(page, "Aceptar provincia"):
         raise RuntimeError(
-            "No se encontró el botón Aceptar después de provincia."
+            "No se encontró el botón Aceptar después de seleccionar Toledo."
         )
-
 
 def seleccionar_tramite(page):
     log_paso(4, "Buscando trámite de toma de huellas")
