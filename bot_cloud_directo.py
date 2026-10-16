@@ -5,7 +5,8 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 URL = "https://sede.administracionespublicas.gob.es/pagina/index/directorio/icpplus/"
 
-# Datos del bot
+# ---------------- CONFIGURACIÓN ----------------
+
 TOKEN = "8975628897:AAEsWs_b3hmGCXZzqh513pV7-t-DabJg9zQ"
 CHAT_ID = "6008287114"
 
@@ -14,9 +15,9 @@ NOMBRE = "OUSSAMA SAIDI"
 NACIONALIDAD = "MARRUECOS"
 PROVINCIA = "Toledo"
 
-INTERVALO = 360          # 6 minutos entre ciclos
-ESPERA_REINTENTO = 20    # reintento corto si falla por timeout
-MAX_INTENTOS = 2         # máximo 2 intentos por ciclo
+INTERVALO = 360  # 6 minutos
+MAX_INTENTOS = 2
+ESPERA_REINTENTO = 20
 
 SIN_CITAS_TEXTOS = (
     "en este momento no hay citas disponibles",
@@ -41,6 +42,8 @@ logging.basicConfig(
 )
 
 
+# ---------------- TELEGRAM ----------------
+
 def enviar_telegram(mensaje):
     try:
         respuesta = requests.post(
@@ -55,16 +58,22 @@ def enviar_telegram(mensaje):
         )
         respuesta.raise_for_status()
         return respuesta.json().get("ok") is True
+
     except requests.RequestException as error:
         logging.error("Telegram falló: %s", error)
         return False
 
 
+# ---------------- UTILIDADES ----------------
+
+def log_paso(numero, texto):
+    logging.info("PASO %s | %s", numero, texto)
+
+
 def leer_texto(page):
     try:
-        return " ".join(
-            page.locator("body").inner_text(timeout=20000).split()
-        ).casefold()
+        texto = page.locator("body").inner_text(timeout=20000)
+        return " ".join(texto.split()).casefold()
     except Exception:
         return ""
 
@@ -86,116 +95,12 @@ def comprobar_estado(page):
     return "ok"
 
 
-def esperar_cambio(page, espera_ms=1200):
-    # La sede no siempre hace una navegación completa.
-    # Esta pequeña espera evita depender de wait_for_load_state().
-    page.wait_for_timeout(espera_ms)
-
-
-def log_paso(numero, texto):
-    logging.info("PASO %s | %s", numero, texto)
-
-
-def abrir_sede(page):
-    log_paso(1, "Abriendo sede")
-
-    # Reintento de navegación porque en cloud la primera conexión
-    # puede tardar más o fallar temporalmente.
-    ultimo_error = None
-
-    for intento in range(1, 4):
-        try:
-            logging.info("Navegación intento %d/3", intento)
-            page.goto(
-                URL,
-                wait_until="domcontentloaded",
-                timeout=120000,
-            )
-            page.wait_for_selector("body", timeout=30000)
-
-            texto = leer_texto(page)
-            if texto:
-                logging.info("Sede cargada correctamente.")
-                return
-
-        except Exception as error:
-            ultimo_error = error
-            logging.warning(
-                "Falló la carga inicial (intento %d/3): %s",
-                intento,
-                error,
-            )
-
-        if intento < 3:
-            page.wait_for_timeout(5000)
-
-    raise RuntimeError(f"No se pudo abrir la sede: {ultimo_error}")
-
-
-def pulsar_acceso(page):
-    log_paso(2, "Buscando 'Acceder al Procedimiento'")
-
-    boton = page.get_by_text(
-        "Acceder al Procedimiento",
-        exact=False,
-    ).first
-
-    boton.wait_for(state="visible", timeout=45000)
-    boton.scroll_into_view_if_needed()
-
-    # La sede deja a veces la navegación pendiente indefinidamente.
-    # El clic sí se ejecuta, por eso no esperamos a que Playwright dé
-    # la navegación por terminada.
-    boton.click(timeout=15000, no_wait_after=True)
-
-    logging.info(
-        "Clic realizado. Dejando cargar la siguiente pantalla..."
-    )
-
-    # Dejamos que llegue el HTML principal y después detenemos recursos
-    # que puedan mantener la navegación abierta (analytics, imágenes, etc.).
-    page.wait_for_timeout(5000)
-
+def pequeña_espera(page, ms=1500):
     try:
-        page.evaluate("window.stop()")
-        logging.info("Carga pendiente detenida para continuar con el DOM.")
-    except Exception as error:
-        logging.info("No fue necesario detener la carga: %s", error)
+        page.wait_for_timeout(ms)
+    except Exception:
+        pass
 
-    logging.info("URL después del acceso: %s", page.url)
-
-    # Buscar el selector de provincia sin depender del estado de navegación.
-    limite = time.time() + 45
-    encontrado = False
-
-    while time.time() < limite:
-        try:
-            existe = page.evaluate(
-                """() => Boolean(document.querySelector("select#form, select[name='form']"))"""
-            )
-            if existe:
-                encontrado = True
-                break
-        except Exception:
-            pass
-
-        page.wait_for_timeout(1000)
-
-    if not encontrado:
-        try:
-            texto = page.evaluate(
-                "() => document.body ? document.body.innerText.slice(0, 1000) : ''"
-            )
-        except Exception:
-            texto = ""
-
-        logging.warning("No apareció el selector de provincia.")
-        logging.warning("Texto visible tras el acceso: %s", texto)
-        raise RuntimeError(
-            "PASO 2 falló: no apareció el selector de provincia tras el acceso."
-        )
-
-    logging.info("Selector de provincia encontrado. Continuando a Toledo.")
 
 def aceptar(page, descripcion="Aceptar"):
     selectores = [
@@ -208,12 +113,12 @@ def aceptar(page, descripcion="Aceptar"):
     for selector in selectores:
         try:
             boton = page.locator(selector).first
-            boton.wait_for(state="visible", timeout=5000)
+            boton.wait_for(state="visible", timeout=6000)
             boton.scroll_into_view_if_needed()
             boton.click(timeout=15000, no_wait_after=True)
-            esperar_cambio(page, 1800)
+            pequeña_espera(page, 1800)
 
-            logging.info("%s pulsado con selector %s", descripcion, selector)
+            logging.info("%s pulsado con selector: %s", descripcion, selector)
             return True
 
         except Exception:
@@ -222,82 +127,251 @@ def aceptar(page, descripcion="Aceptar"):
     return False
 
 
+# ---------------- RECORRIDO ----------------
+
+def abrir_sede(page):
+    log_paso(1, "Abriendo sede")
+
+    ultimo_error = None
+
+    for intento in range(1, 4):
+        try:
+            logging.info("Navegación intento %d/3", intento)
+
+            page.goto(
+                URL,
+                wait_until="domcontentloaded",
+                timeout=120000,
+            )
+
+            page.wait_for_selector("body", timeout=30000)
+
+            if leer_texto(page):
+                logging.info("Sede cargada correctamente.")
+                return
+
+        except Exception as error:
+            ultimo_error = error
+            logging.warning(
+                "Falló la carga inicial intento %d/3: %s",
+                intento,
+                error,
+            )
+
+        if intento < 3:
+            page.wait_for_timeout(5000)
+
+    raise RuntimeError(
+        f"No se pudo abrir la sede: {ultimo_error}"
+    )
+
+
+def pulsar_acceso_y_cambiar_pestana(contexto, page_inicial):
+    log_paso(
+        2,
+        "Pulsando 'Acceder al Procedimiento' y esperando nueva pestaña"
+    )
+
+    boton = page_inicial.get_by_text(
+        "Acceder al Procedimiento",
+        exact=False,
+    ).first
+
+    boton.wait_for(state="visible", timeout=45000)
+    boton.scroll_into_view_if_needed()
+
+    paginas_antes = set(contexto.pages)
+
+    nueva_page = None
+
+    try:
+        # La sede abre el procedimiento en una pestaña nueva.
+        with contexto.expect_page(timeout=30000) as popup_info:
+            boton.click(timeout=15000, no_wait_after=True)
+
+        nueva_page = popup_info.value
+
+        logging.info(
+            "Nueva pestaña detectada: %s",
+            nueva_page.url,
+        )
+
+    except PlaywrightTimeoutError:
+        logging.warning(
+            "expect_page no detectó popup. Buscando cualquier pestaña nueva..."
+        )
+
+        # Fallback por si el evento popup no se captura bien en cloud.
+        limite = time.time() + 20
+
+        while time.time() < limite:
+            actuales = contexto.pages
+
+            nuevas = [p for p in actuales if p not in paginas_antes]
+
+            if nuevas:
+                nueva_page = nuevas[-1]
+                break
+
+            time.sleep(0.5)
+
+    if nueva_page is None:
+        raise RuntimeError(
+            "PASO 2 falló: no apareció la nueva pestaña del procedimiento."
+        )
+
+    nueva_page.set_default_timeout(30000)
+    nueva_page.set_default_navigation_timeout(120000)
+
+    try:
+        nueva_page.wait_for_load_state(
+            "domcontentloaded",
+            timeout=60000,
+        )
+    except PlaywrightTimeoutError:
+        logging.warning(
+            "La nueva pestaña no terminó domcontentloaded, continuando."
+        )
+
+    nueva_page.wait_for_selector("body", timeout=30000)
+
+    logging.info(
+        "Trabajando ahora en la nueva pestaña: %s",
+        nueva_page.url,
+    )
+
+    return nueva_page
+
+
 def seleccionar_provincia(page):
     log_paso(3, "Seleccionando provincia: Toledo")
 
+    # Primero probamos los selectores conocidos.
     provincia = page.locator(
         "select#form, select[name='form']"
     ).first
 
-    provincia.wait_for(state="attached", timeout=30000)
+    encontrada = False
 
     try:
-        provincia.select_option(label=PROVINCIA, timeout=15000)
+        provincia.wait_for(state="visible", timeout=20000)
+        encontrada = True
     except Exception:
-        # Fallback por si Playwright vuelve a quedar condicionado por una
-        # navegación pendiente: seleccionamos Toledo directamente en el DOM.
-        seleccionado = page.evaluate(
-            """(provincia) => {
-                const s = document.querySelector("select#form, select[name='form']");
-                if (!s) return false;
-                const opt = Array.from(s.options).find(
-                    o => o.text.trim().toLowerCase() === provincia.toLowerCase()
-                );
-                if (!opt) return false;
-                s.value = opt.value;
-                s.dispatchEvent(new Event('change', {bubbles: true}));
-                return true;
-            }""",
-            PROVINCIA,
+        pass
+
+    # Fallback: buscar un select que contenga TOLEDO entre sus opciones.
+    if not encontrada:
+        logging.info(
+            "No apareció select#form. Buscando desplegable por opciones..."
         )
+
+        selects = page.locator("select")
+
+        for i in range(selects.count()):
+            menu = selects.nth(i)
+
+            try:
+                opciones = menu.locator("option")
+                textos = []
+
+                for j in range(opciones.count()):
+                    textos.append(
+                        opciones.nth(j).inner_text().strip().casefold()
+                    )
+
+                if any("toledo" in texto for texto in textos):
+                    provincia = menu
+                    encontrada = True
+                    break
+
+            except Exception:
+                continue
+
+    if not encontrada:
+        logging.warning(
+            "Texto visible en la pantalla: %s",
+            leer_texto(page)[:1000],
+        )
+        raise RuntimeError(
+            "PASO 3 falló: no se encontró el desplegable de provincias."
+        )
+
+    # Intento por label exacto.
+    try:
+        provincia.select_option(label=PROVINCIA)
+    except Exception:
+        # Fallback buscando la opción que contenga Toledo.
+        opciones = provincia.locator("option")
+        seleccionado = False
+
+        for i in range(opciones.count()):
+            opcion = opciones.nth(i)
+            etiqueta = opcion.inner_text().strip()
+
+            if PROVINCIA.casefold() in etiqueta.casefold():
+                valor = opcion.get_attribute("value")
+
+                if valor:
+                    provincia.select_option(value=valor)
+                    seleccionado = True
+                    break
+
         if not seleccionado:
-            raise RuntimeError("No se encontró Toledo en el desplegable de provincia.")
+            raise RuntimeError(
+                "PASO 3 falló: apareció el desplegable pero no la opción Toledo."
+            )
 
     logging.info("Provincia seleccionada: %s", PROVINCIA)
 
     if not aceptar(page, "Aceptar provincia"):
         raise RuntimeError(
-            "No se encontró el botón Aceptar después de seleccionar Toledo."
+            "PASO 3 falló: no se pudo pulsar Aceptar tras elegir Toledo."
         )
+
 
 def seleccionar_tramite(page):
     log_paso(4, "Buscando trámite de toma de huellas")
 
-    # Damos tiempo explícito a que aparezcan los desplegables.
-    page.locator("select").first.wait_for(
-        state="attached",
-        timeout=45000,
-    )
+    pequeña_espera(page, 1500)
 
     objetivo_1 = "toma de huellas"
     objetivo_2 = "expedición de tarjeta"
 
-    menus = page.locator("select")
-    cantidad = menus.count()
+    selects = page.locator("select")
+    cantidad = selects.count()
 
     logging.info("Desplegables encontrados: %d", cantidad)
 
     for i in range(cantidad):
-        menu = menus.nth(i)
+        menu = selects.nth(i)
 
         try:
             opciones = menu.locator("option")
 
             for j in range(opciones.count()):
                 opcion = opciones.nth(j)
-                etiqueta = " ".join(opcion.inner_text().split())
+                etiqueta = " ".join(
+                    opcion.inner_text().split()
+                )
                 normalizada = etiqueta.casefold()
 
-                if objetivo_1 in normalizada and objetivo_2 in normalizada:
+                if (
+                    objetivo_1 in normalizada
+                    and objetivo_2 in normalizada
+                ):
                     valor = opcion.get_attribute("value")
 
                     if valor:
                         menu.select_option(value=valor)
-                        logging.info("Trámite seleccionado: %s", etiqueta)
+
+                        logging.info(
+                            "Trámite seleccionado: %s",
+                            etiqueta,
+                        )
                         return True
 
-        except Exception as error:
-            logging.debug("Menú %d ignorado: %s", i, error)
+        except Exception:
+            continue
 
     return False
 
@@ -316,12 +390,15 @@ def pasar_avisos(page):
     for selector in selectores:
         try:
             boton = page.locator(selector).first
-            boton.wait_for(state="visible", timeout=7000)
+            boton.wait_for(state="visible", timeout=8000)
             boton.scroll_into_view_if_needed()
             boton.click(timeout=15000, no_wait_after=True)
-            esperar_cambio(page, 2000)
+            pequeña_espera(page, 2000)
 
-            logging.info("Avisos superados con selector: %s", selector)
+            logging.info(
+                "Pantalla de avisos superada con selector: %s",
+                selector,
+            )
             return True
 
         except Exception:
@@ -338,6 +415,7 @@ def rellenar_formulario_datos(page):
         timeout=45000,
     )
 
+    # NIE
     try:
         radio_nie = page.locator(
             "input[type='radio'][value='NIE'], "
@@ -346,13 +424,13 @@ def rellenar_formulario_datos(page):
 
         if radio_nie.is_visible(timeout=3000):
             radio_nie.check()
-            logging.info("Tipo NIE seleccionado.")
     except Exception:
         pass
 
-    # NIE
     input_nie = page.locator(
-        "input#txtIdCit, input[name*='IdCit'], input[name*='Citado']"
+        "input#txtIdCit, "
+        "input[name*='IdCit'], "
+        "input[name*='Citado']"
     ).first
 
     try:
@@ -387,33 +465,25 @@ def rellenar_formulario_datos(page):
         if select_pais.is_visible(timeout=5000):
             try:
                 select_pais.select_option(label=NACIONALIDAD)
-                logging.info(
-                    "Nacionalidad seleccionada directamente: %s",
-                    NACIONALIDAD,
-                )
+
             except Exception:
                 opciones = select_pais.locator("option")
-                encontrada = False
 
                 for i in range(opciones.count()):
                     opcion = opciones.nth(i)
                     etiqueta = opcion.inner_text().strip()
 
-                    if NACIONALIDAD.casefold() in etiqueta.casefold():
+                    if (
+                        NACIONALIDAD.casefold()
+                        in etiqueta.casefold()
+                    ):
                         valor = opcion.get_attribute("value")
+
                         if valor:
-                            select_pais.select_option(value=valor)
-                            encontrada = True
-                            logging.info(
-                                "Nacionalidad seleccionada: %s",
-                                etiqueta,
+                            select_pais.select_option(
+                                value=valor
                             )
                             break
-
-                if not encontrada:
-                    logging.warning(
-                        "No se encontró la nacionalidad en el desplegable."
-                    )
 
     except Exception as error:
         logging.warning(
@@ -423,12 +493,12 @@ def rellenar_formulario_datos(page):
 
     if not aceptar(page, "Aceptar datos personales"):
         raise RuntimeError(
-            "No se pudo avanzar después de rellenar datos personales."
+            "PASO 6 falló: no se pudo avanzar tras rellenar los datos."
         )
 
 
 def pulsar_solicitar_cita(page):
-    log_paso(7, "Buscando botón 'Solicitar Cita'")
+    log_paso(7, "Pulsando 'Solicitar Cita'")
 
     selectores = [
         "input[value='Solicitar Cita']",
@@ -443,11 +513,10 @@ def pulsar_solicitar_cita(page):
             boton.scroll_into_view_if_needed()
             boton.click(timeout=15000, no_wait_after=True)
 
-            # Damos tiempo a que aparezca el resultado.
-            esperar_cambio(page, 3500)
+            pequeña_espera(page, 3500)
 
             logging.info(
-                "Botón Solicitar Cita pulsado con selector: %s",
+                "'Solicitar Cita' pulsado con selector: %s",
                 selector,
             )
             return True
@@ -465,10 +534,12 @@ def evaluar_resultado_final(page):
     url_actual = page.url
 
     if not texto:
-        logging.warning("La pantalla final no contiene texto legible.")
+        logging.warning("Pantalla final sin texto.")
         return "desconocido"
 
-    if "429" in texto or any(x in texto for x in BLOQUEO_TEXTOS):
+    if "429" in texto or any(
+        x in texto for x in BLOQUEO_TEXTOS
+    ):
         logging.warning("Resultado final: bloqueo/429.")
         return "bloqueo"
 
@@ -492,7 +563,7 @@ def evaluar_resultado_final(page):
 
     if "cl@ve" in texto and "disposición" in texto:
         logging.info(
-            "RESULTADO FINAL: no hay citas ordinarias; solo Cl@ve."
+            "RESULTADO FINAL: no hay citas ordinarias."
         )
 
         enviar_telegram(
@@ -528,70 +599,87 @@ def evaluar_resultado_final(page):
     logging.warning("RESULTADO FINAL: pantalla desconocida.")
     logging.warning("URL final: %s", url_actual)
     logging.warning(
-        "Texto final (primeros 800 caracteres): %s",
-        texto[:800],
+        "Texto final: %s",
+        texto[:1000],
     )
 
     return "desconocido"
 
 
-def ejecutar_ciclo(page):
-    page.set_default_timeout(30000)
-    page.set_default_navigation_timeout(120000)
+# ---------------- CICLO COMPLETO ----------------
 
-    abrir_sede(page)
+def ejecutar_ciclo(contexto):
+    page_inicial = contexto.new_page()
+    page_procedimiento = None
 
-    estado = comprobar_estado(page)
-    if estado != "ok":
-        return estado
+    try:
+        abrir_sede(page_inicial)
 
-    pulsar_acceso(page)
+        estado = comprobar_estado(page_inicial)
+        if estado != "ok":
+            return estado
 
-    estado = comprobar_estado(page)
-    if estado != "ok":
-        return estado
-
-    seleccionar_provincia(page)
-
-    estado = comprobar_estado(page)
-    if estado != "ok":
-        return estado
-
-    if not seleccionar_tramite(page):
-        raise RuntimeError(
-            "PASO 4 falló: no se encontró el trámite de toma de huellas."
+        page_procedimiento = pulsar_acceso_y_cambiar_pestana(
+            contexto,
+            page_inicial,
         )
 
-    if not aceptar(page, "Aceptar trámite"):
-        raise RuntimeError(
-            "PASO 4 falló: no se pudo aceptar el trámite."
-        )
+        estado = comprobar_estado(page_procedimiento)
+        if estado not in ("ok", "desconocido"):
+            return estado
 
-    estado = comprobar_estado(page)
-    if estado != "ok":
-        return estado
+        seleccionar_provincia(page_procedimiento)
 
-    if not pasar_avisos(page):
-        raise RuntimeError(
-            "PASO 5 falló: no se pudo superar la pantalla de avisos."
-        )
+        estado = comprobar_estado(page_procedimiento)
+        if estado not in ("ok", "desconocido"):
+            return estado
 
-    estado = comprobar_estado(page)
-    if estado != "ok":
-        return estado
+        if not seleccionar_tramite(page_procedimiento):
+            raise RuntimeError(
+                "PASO 4 falló: no se encontró el trámite de toma de huellas."
+            )
 
-    rellenar_formulario_datos(page)
+        if not aceptar(
+            page_procedimiento,
+            "Aceptar trámite",
+        ):
+            raise RuntimeError(
+                "PASO 4 falló: no se pudo aceptar el trámite."
+            )
 
-    estado = comprobar_estado(page)
-    if estado != "ok":
-        return estado
+        estado = comprobar_estado(page_procedimiento)
+        if estado not in ("ok", "desconocido"):
+            return estado
 
-    if not pulsar_solicitar_cita(page):
-        raise RuntimeError(
-            "PASO 7 falló: no se encontró 'Solicitar Cita'."
-        )
+        if not pasar_avisos(page_procedimiento):
+            raise RuntimeError(
+                "PASO 5 falló: no se pudo superar la pantalla de avisos."
+            )
 
-    return evaluar_resultado_final(page)
+        estado = comprobar_estado(page_procedimiento)
+        if estado not in ("ok", "desconocido"):
+            return estado
+
+        rellenar_formulario_datos(page_procedimiento)
+
+        estado = comprobar_estado(page_procedimiento)
+        if estado not in ("ok", "desconocido"):
+            return estado
+
+        if not pulsar_solicitar_cita(page_procedimiento):
+            raise RuntimeError(
+                "PASO 7 falló: no se encontró 'Solicitar Cita'."
+            )
+
+        return evaluar_resultado_final(page_procedimiento)
+
+    finally:
+        # Cerrar todas las páginas del contexto de este intento.
+        for p in list(contexto.pages):
+            try:
+                p.close()
+            except Exception:
+                pass
 
 
 def crear_contexto(navegador):
@@ -602,15 +690,15 @@ def crear_contexto(navegador):
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/124.0.0.0 Safari/537.36"
         ),
-        viewport={"width": 1365, "height": 900},
+        viewport={
+            "width": 1365,
+            "height": 900,
+        },
     )
 
 
 def ejecutar_intento(navegador, numero_intento):
-    # Contexto NUEVO en cada intento:
-    # evita arrastrar una sesión rota o caducada.
     contexto = crear_contexto(navegador)
-    page = contexto.new_page()
 
     try:
         logging.info(
@@ -619,21 +707,18 @@ def ejecutar_intento(navegador, numero_intento):
             MAX_INTENTOS,
         )
 
-        return ejecutar_ciclo(page)
+        return ejecutar_ciclo(contexto)
 
     finally:
-        try:
-            page.close()
-        except Exception:
-            pass
-
         try:
             contexto.close()
         except Exception:
             pass
 
-        logging.info("Pestaña y contexto cerrados.")
+        logging.info("Contexto cerrado.")
 
+
+# ---------------- MAIN ----------------
 
 def main():
     enviar_telegram(
@@ -655,14 +740,16 @@ def main():
             while True:
                 resultado = "desconocido"
 
-                for intento in range(1, MAX_INTENTOS + 1):
+                for intento in range(
+                    1,
+                    MAX_INTENTOS + 1,
+                ):
                     try:
                         resultado = ejecutar_intento(
                             navegador,
                             intento,
                         )
 
-                        # Si llegamos a un resultado real, no repetimos.
                         if resultado in (
                             "sin_citas",
                             "citas_encontradas",
@@ -673,25 +760,27 @@ def main():
 
                     except PlaywrightTimeoutError as error:
                         logging.warning(
-                            "TIMEOUT en intento %d/%d: %s",
+                            "TIMEOUT intento %d/%d: %s",
                             intento,
                             MAX_INTENTOS,
                             error,
                         )
+
                         resultado = "desconocido"
 
                     except Exception as error:
                         logging.exception(
-                            "ERROR en intento %d/%d: %s",
+                            "ERROR intento %d/%d: %s",
                             intento,
                             MAX_INTENTOS,
                             error,
                         )
+
                         resultado = "desconocido"
 
                     if intento < MAX_INTENTOS:
                         logging.info(
-                            "Reintentando con una sesión nueva en %d segundos...",
+                            "Reintentando en %d segundos...",
                             ESPERA_REINTENTO,
                         )
                         time.sleep(ESPERA_REINTENTO)
@@ -700,6 +789,7 @@ def main():
                     "RESULTADO DEL CICLO: %s",
                     resultado,
                 )
+
                 logging.info(
                     "Próxima comprobación en 6 minutos."
                 )
